@@ -310,6 +310,8 @@ def main():
 		else: # check and exist
 			# 存在的，不允许重新创建
 			print('[WARN]no need main package `%s`' % args.mainPackagePath)
+	elif args.action == 'clean':
+		clean_old_packages(args) # 清理旧版本
 	else:
 		bResult = create_package_diff(args, newResVersion)
 
