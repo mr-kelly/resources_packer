@@ -1,0 +1,335 @@
+#!/bin/env python
+#encoding=utf-8
+"""
+
+Author : chenpeilin <23110388@qq.com>
+Website: http://github.com/mr-kelly/resources_packer
+
+用于指定目录的差异zip包命令行工具，无项目逻辑依赖，可各个项目使用
+
+"""
+import argparse, os, sys, zipfile, csv
+import StringIO
+import hashlib
+import datetime
+import shutil
+import errno
+
+MANIFEST_FILE_NAME ='.manifest'
+MANIFEST_HEADERS = ['File', 'MD5', 'Size', 'MTime', 'MFormatTime']
+
+def get_clean_path(dirtyPath):
+	"""
+	获取干净路径，主要替换windows的\\
+	"""
+	return dirtyPath.replace('\\', '/')
+
+def get_stream_md5(stream):
+	"""
+	获取流的MD5
+	"""
+	return hashlib.md5(stream.read()).hexdigest().upper()
+
+def get_file_md5(filePath):
+	"""
+	获取文件的MD5
+	"""
+	return get_stream_md5(open(filePath, 'rb'))
+
+def verify_package(packagePath, writedFilesMap):
+	"""
+	校验文件内容是否跟manifest一致，一致则生成md5文件
+	"""
+
+	with zipfile.ZipFile(packagePath, 'r', zipfile.ZIP_DEFLATED) as rz:
+		print 'Verify zip package correct ... %s' % packagePath
+		rManifestStream = rz.open(MANIFEST_FILE_NAME)
+		rManifestReader = csv.DictReader(rManifestStream, delimiter='	', fieldnames=MANIFEST_HEADERS)
+
+		for row in rManifestReader:
+			# 忽略第一行header
+			if rManifestReader.line_num == 1:
+				continue
+
+			zipFilePath = row['File']
+			if not zipFilePath in writedFilesMap: # 上一次没有写入，忽略校验
+				continue
+
+			md5Str = row['MD5']
+
+			zipFileMd5 = get_stream_md5(rz.open(zipFilePath))
+			fullFile = writedFilesMap[zipFilePath]
+			assert(zipFileMd5 == md5Str)
+			assert(zipFileMd5 == get_file_md5(fullFile))
+
+		# 验证成功，生成md5文件
+		with open('%s.md5' % packagePath, 'wb+') as md5f:
+			md5f.write(get_file_md5(packagePath))
+
+
+def create_package(args, packagePath, paths, compareFilesMap=None):
+	"""
+	创建资源包
+	后面参数为空则是全量包了
+	"""
+
+	print('@@ => Create Package ... %s' % packagePath)
+
+	writedFilesMap = {} # 写入过的文件统计 / zipPath -> fullPath
+
+	print paths
+
+	if os.path.isfile(packagePath):
+		print '[WARN]Delete and repack ... %s' % packagePath
+		os.remove(packagePath)
+
+	manifestStream = StringIO.StringIO()
+	manifestCsv = csv.DictWriter(manifestStream, delimiter='	', fieldnames=MANIFEST_HEADERS)
+	manifestCsv.writeheader()
+	with zipfile.ZipFile(packagePath, 'w', zipfile.ZIP_DEFLATED) as zf:
+		for path in paths:
+			abspath = os.path.abspath(path)
+
+			if not os.path.isdir(abspath):
+				print('[WARN]Cannot found directory: %s,  ignore it' % abspath)
+				continue
+
+			topDirPath = get_clean_path(os.path.dirname(abspath)) # 上级目录路径，替换掉这个字符串，就是最终目录相对路径了
+
+			print 'Top Dir: ' + topDirPath
+			print('')
+
+
+
+			for dirFullPath, subdirList, fileList in os.walk(abspath):
+				cleanDirFullPath = get_clean_path(dirFullPath)
+				# 文件夹相对zip的路径 = 完整路径 - 上层大目录路径
+				dirZipPath = cleanDirFullPath.replace(topDirPath, '')
+
+				for filePath in fileList:
+
+					fileFullPath = get_clean_path('%s/%s' % (cleanDirFullPath, filePath))
+					filename, file_extension = os.path.splitext(fileFullPath)
+
+					# 扩展名判断
+					hasIgnoreExt = False
+					if args.ignores_ext != None:# and file_extension in args.ignores_ext:
+						for ext in args.ignores_ext:
+							if fileFullPath.endswith(ext):
+								hasIgnoreExt = True # 忽略该扩展名的
+					if hasIgnoreExt:
+						continue
+
+					# 文件相对zip的路径
+					fileZipPath = get_clean_path('%s/%s' % (dirZipPath, filePath))
+					fileZipPath = fileZipPath.lstrip('/') # 去掉开始的/
+
+					fileMD5 = get_file_md5(fileFullPath)
+
+					# 进行比较! 如果一样，不写入文件，但写入信息
+					if compareFilesMap == None or \
+						(fileZipPath not in compareFilesMap) or \
+						(fileZipPath in compareFilesMap and compareFilesMap[fileZipPath]['MD5'] != fileMD5):
+
+						print('%s --> %s' % (fileFullPath, fileZipPath))
+						zf.write(fileFullPath, fileZipPath)
+						writedFilesMap[fileZipPath] = fileFullPath
+						print 'write .... %s' % fileZipPath
+
+					# 使用整数时间戳
+					os.stat_float_times(False)
+					file_mtime = os.path.getmtime(fileFullPath)
+
+					# 所有文件都写入这里，无例外
+					manifestCsv.writerow({
+						'File': fileZipPath,
+						'MD5': fileMD5,
+						'Size' : os.path.getsize(fileFullPath),
+						'MTime' : file_mtime,
+						'MFormatTime' : datetime.datetime.fromtimestamp(os.path.getmtime(fileFullPath))
+					})
+		zf.writestr(MANIFEST_FILE_NAME, manifestStream.getvalue())
+
+
+
+	#print manifestStream.getvalue()
+	print("Total Writed Files Count: %d" % len(writedFilesMap))
+
+	if len(writedFilesMap) > 0:
+		verify_package(packagePath, writedFilesMap)
+
+	manifestStream.close()
+
+	# 如果没任何操作就直接退出，不写入版本，并且删除临时创建的zip
+	if len(writedFilesMap) == 0:
+		# 没写入任何文件，删掉生成的zip直接退出吧
+		print("[WARN]No Files Changed, no need to Zip Resource : %s "% packagePath)
+		os.remove(packagePath)
+		return False
+	return True
+
+
+
+def mkdir_p(path):
+	"""
+	same as command `mkdir -p`
+	"""
+	try:
+		os.makedirs(path)
+	except OSError as exc:  # Python >2.5
+		if exc.errno == errno.EEXIST and os.path.isdir(path):
+			pass
+		else:
+			raise
+
+def get_current_resource_version(versionFilePath):
+	"""
+	获取当前Resource Version返回 int
+	"""
+	strVersion = ''
+	with open(versionFilePath, 'rb+') as f:
+		strVersion = f.read()
+	return int(strVersion)
+
+def create_package_diff(args, newResVersion, autoClean = True):
+	"""
+	创建指定新版本的新差异资源包
+
+	autoClean 是否创建完毕后，清理旧的差异包
+	"""
+	resVersion = newResVersion - 1
+
+
+	# 寻找上一版zip包, 总结跟现在的不同
+	i = resVersion + 1
+	bResult = True # 标记是否有任意失败
+	while True:
+		i = i - 1
+		if i < 0:
+			break
+
+		_zipName = '%s.%d.zip' % ( args.package_name, i) # 用来对比差异的zip包
+		_zipPath = '%s/%s' % (args.artifact_dir, _zipName)
+
+		print ''
+		print '====>'
+		print 'ANANALYSE ==============> %s' % _zipName
+
+		compareFilesMap = {} # 文件历史记录在这
+
+		if not os.path.isfile(_zipPath):
+			print("[ERROR]Cannot find package: %s" % _zipName)
+			sys.exit(1)
+
+		# 读取上一版的manifeset
+		with zipfile.ZipFile(_zipPath, 'r') as rzip:
+			rManifestStream = rzip.open(MANIFEST_FILE_NAME)
+			rManifestReader = csv.DictReader(rManifestStream, delimiter='	', fieldnames=MANIFEST_HEADERS)
+
+			for row in rManifestReader:
+				# 忽略第一行header
+				if rManifestReader.line_num == 1:
+					continue
+
+				compareFilesMap[row['File']] = row # 读取到所有记录
+
+		# 写入新版
+		newPackageName = '%s.%d-%d.zip' % (args.package_name, i, newResVersion)
+		newPackagePath = '%s/%s' % (args.artifact_dir, newPackageName)
+		print 'NEW PACK ==============> %s' % newPackageName
+
+		if create_package(args, newPackagePath, args.paths, compareFilesMap):
+			pass
+		else:
+			# 任意一个没有构建成功直接退出吧
+			bResult = False
+			break
+
+	return bResult
+
+def clean_old_packages(args):
+	"""
+	清理指定旧版本的所有资源包
+	"""
+	resVersion = get_current_resource_version(args.version_file)
+	cleanVersion = resVersion - 1 # 因为未知上一阶段是否生成生成，所以起始位上上个版本
+
+	for _oldVersion in range(1, cleanVersion + 1):
+		# 清理资源版本的顶头包，比如现在最新资源版本7, 那么0-6, 1-6等，已经用不上了
+		for i in range(0, _oldVersion):
+			oldPackageName = '%s.%d-%d.zip' % (args.package_name, i, _oldVersion)
+			oldPackagePath = '%s/%s' % (args.artifact_dir, oldPackageName)
+			archiveDir = '%s/archives' % args.artifact_dir
+			mkdir_p(archiveDir)
+			moveToPath = '%s/%s' % (archiveDir, oldPackageName)
+			if os.path.isfile(oldPackagePath):
+				shutil.move(oldPackagePath, moveToPath)
+				print('Clean/Archived `%s`' % oldPackageName)
+def main():
+	parser = argparse.ArgumentParser(description=u'资源包、差异包生成工具， 传入指定的文件目录、输出名字，生成zip')
+	parser.add_argument('-paths', required=True, nargs='+', help=u'路径，目录或文件，将作为zip的根路径')
+	parser.add_argument('-package-name', required=True, help=u'包名字前缀')
+	# parser.add_argument('-version-file-name', default='ResourceVersion.txt', help=u'包含一个数字的txt文件名，相对artifact-dir路径,默认ResourceVersion.txt')
+	parser.add_argument('-artifact-dir', required=True, help=u'最终成品目录？将搜索这些目录，找出过往的日志')
+	parser.add_argument('-action', choices=['init', 'check', 'pack', 'clean'], required=True, help=u'check只确保初始包存在，init则强制重新生成初始化包(不提版), pack则生成差异包(递进版本)')
+	parser.add_argument('-ignores-ext', nargs='*', help=u'忽略的扩展名，如: .meta .gitignore')
+
+	args = parser.parse_args()
+
+	args.version_file = '%s/%s.resource_version.txt' % (args.artifact_dir, args.package_name)
+
+	if not os.path.isfile(args.version_file):
+		# 不存在则创建默认Versionfile版本号0
+		mkdir_p(args.artifact_dir)
+
+		with open(args.version_file, 'wb+') as wf:
+			wf.write('0')
+		print "Create Version file: %s" % args.version_file
+
+	strVersion = get_current_resource_version(args.version_file)
+
+	# 资源版本号在第4位
+	resVersion = int(strVersion)
+	newResVersion = resVersion + 1
+
+	print("Current Resource Version: %d" % resVersion)
+	print("Action: %s" % args.action)
+
+	args.mainPackageName = '%s.%d.zip' % (args.package_name, resVersion)
+	args.mainPackagePath = '%s/%s' % (args.artifact_dir, args.mainPackageName)
+
+	if args.action == 'init' or args.action == 'check':
+		# 直接生成完整包
+		# init相当于强制创建
+		if not os.path.isfile(args.mainPackagePath) or args.action == 'init': # 不存在，或init时强制重新创建版本完整包
+			create_package(args, args.mainPackagePath, args.paths)
+
+			if resVersion != 0:
+				create_package_diff(args, resVersion, False) # 重复生成差异包，这时候已经没有差异了，强制生成空的
+			print("[WARN]ReBuild Main Package because it has existed... %s" % args.mainPackagePath)
+		else: # check and exist
+			# 存在的，不允许重新创建
+			print('[WARN]no need main package `%s`' % args.mainPackagePath)
+	else:
+		bResult = create_package_diff(args, newResVersion)
+
+		if bResult:
+
+			# 差异包生成完，生成对应版本的完整包
+			newFullPackageName = '%s.%d.zip' % (args.package_name, newResVersion)
+			newFullPackagePath = '%s/%s' % (args.artifact_dir, newFullPackageName)
+			create_package(args, newFullPackagePath, args.paths, None)
+
+
+			cleanVersion = resVersion
+			# 修改版本号，并写入
+			with open(args.version_file, 'wb+') as wf:
+				wf.write(str(newResVersion))
+			print('')
+			print('New Resource Version --> %s' % newResVersion)
+
+			# TODO: 暂时不清理，永久保留历史
+			# clean_old_packages(args)
+
+if __name__ == '__main__':
+	main()
