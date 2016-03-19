@@ -1,4 +1,4 @@
-# resources_packer 资源打包工具
+# resources_packer 资源包生成工具
 
 resources_packer是一个简单实用的游戏资源更新包制作工具。
 
@@ -19,9 +19,9 @@ resources_packer就是一个生成版本差异资源包自动化工具。
 
 假设, 所需打包的目录testdir
 
-- testdir
-	- test1.txt
-	- test2.txt
+> - testdir
+> 	- test1.txt
+> 	- test2.txt
 
 执行命令, 操作行为check
 ```shell
@@ -31,18 +31,18 @@ resources_packer -paths testdir -package-name TestPackage -artifact-dir testdirO
 
 这时候，与testdir目录平级的testdirOutput目录下，将生成:
 
-- testdirOutput            			--> 输出目录
-	- TestPackage.0.zip 				--> 生成的0号资源包，包含test1.txt, test2.txt两个文件
-	- TestPackage.0.zip.md5 			--> 0号资源包的md5文本
-	- TestPackage.resource_version.txt  --> TestPackage这个系列包的最新版本（比如当前内容为0）
+> - testdirOutput            			--> 输出目录
+> 	- TestPackage.0.zip 				--> 生成的0号资源包，包含test1.txt, test2.txt两个文件
+> 	- TestPackage.0.zip.md5 			--> 0号资源包的md5文本
+> 	- TestPackage.resource_version.txt  --> TestPackage这个系列包的最新版本（比如当前内容为0）
 
 
 这时候，我们已经拥有了0号资源包了。我们做一些差异文件：往testdir里新加文件test3.txt。
 testdir目录的结构将变化成：
-- testdir
- 	- test1.txt
- 	- test2.txt
-	- test3.txt
+> - testdir
+>  	- test1.txt
+>  	- test2.txt
+> 	- test3.txt
 
 执行命令, 操作行为pack：
 ```shell
@@ -52,14 +52,14 @@ resources_packer -paths testdir -package-name TestPackage -artifact-dir testdirO
 
 这时候，与testdir目录平级的testdirOutput目录下，将变成:
 
-- testdirOutput            			--> 输出目录
- 	- TestPackage.0.zip 				--> 生成的0号资源包全量包，包含test1.txt, test2.txt两个文件
- 	- TestPackage.0.zip.md5 			--> 0号资源包的md5文本
-	- TestPackage.0-1.zip 				--> 0号资源包与1号资源包的差异包
-	- TestPackage.0-1.zip.md5
-	- TestPackage.1.zip 				--> 1号资源包的全量包
-	- TestPackage.1.zip.md5
- 	- TestPackage.resource_version.txt  --> TestPackage这个系列包的最新版本（现在内容为1）
+> - testdirOutput            			--> 输出目录
+>  	- TestPackage.0.zip 				--> 生成的0号资源包全量包，包含test1.txt, test2.txt两个文件
+>  	- TestPackage.0.zip.md5 			--> 0号资源包的md5文本
+> 	- TestPackage.0-1.zip 				--> 0号资源包与1号资源包的差异包
+> 	- TestPackage.0-1.zip.md5
+> 	- TestPackage.1.zip 				--> 1号资源包的全量包
+> 	- TestPackage.1.zip.md5
+>  	- TestPackage.resource_version.txt  --> TestPackage这个系列包的最新版本（现在内容为1）
 
 好了，一个差异资源包0-1就这样生成了。
 
@@ -68,10 +68,10 @@ resources_packer -paths testdir -package-name TestPackage -artifact-dir testdirO
 
 ## 生成的zip包，有什么特别？
 
-- .manifest        记录全量的文件（不论差异与否，所有的目录文件）的大小、MD5等文件信息
-- OTHER1
-- OTHER2
-- OTHER3/OTHER4.txt
+> - .manifest        记录全量的文件（不论差异与否，所有的目录文件）的大小、MD5等文件信息
+> - OTHER1
+> - OTHER2
+> - OTHER3/OTHER4.txt
 
 简而言之，生成的资源zip，只有根路径的.manifest文件是由resources_packer生成的，其余的所有文件，都是您所设置的资源文件。
 
