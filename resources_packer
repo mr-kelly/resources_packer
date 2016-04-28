@@ -134,14 +134,18 @@ def create_package(args, packagePath, paths, compareFilesMap=None):
 								in_blacklist = True 
 								break
 
+					if in_blacklist:
+						# 黑名单直接写入的旧的数据,或当它不存在
+						if compareFilesMap:
+							manifestCsv.writerow(compareFilesMap[fileZipPath])
+						continue
+
 					# 进行比较! 如果一样，不写入文件，但写入信息, 以下是写入文件
 					if ( \
-						(not in_blacklist) and \
-						( \
 							compareFilesMap == None or \
 							(fileZipPath not in compareFilesMap) or \
 							(fileZipPath in compareFilesMap and compareFilesMap[fileZipPath]['MD5'] != fileMD5) \
-						)):
+						):
 
 						print('%s --> %s' % (fileFullPath, fileZipPath))
 						zf.write(fileFullPath, fileZipPath)
