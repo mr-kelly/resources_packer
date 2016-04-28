@@ -107,7 +107,7 @@ def create_package(args, packagePath, paths, compareFilesMap=None):
 				dirZipPath = cleanDirFullPath.replace(topDirPath, '')
 
 				for filePath in fileList:
-
+					
 					fileFullPath = get_clean_path('%s/%s' % (cleanDirFullPath, filePath))
 					filename, file_extension = os.path.splitext(fileFullPath)
 
@@ -126,18 +126,17 @@ def create_package(args, packagePath, paths, compareFilesMap=None):
 
 					fileMD5 = get_file_md5(fileFullPath)
 
-					# 是否激活白名单模式
-					in_whitelist = True  # 默认true
-					if args.whitelist: #白名单存在则要判断
-						in_whitelist = False
-						for white_item in args.whitelist:
-							if white_item in filePath:
-								in_whitelist = True 
+					# 是否激活黑名单模式
+					in_blacklist = False  # 默认true
+					if args.blacklist: #黑名单存在则要判断
+						for black_item in args.blacklist:
+							if black_item in fileFullPath:
+								in_blacklist = True 
 								break
 
 					# 进行比较! 如果一样，不写入文件，但写入信息, 以下是写入文件
 					if ( \
-						in_whitelist and \
+						(not in_blacklist) and \
 						( \
 							compareFilesMap == None or \
 							(fileZipPath not in compareFilesMap) or \
@@ -286,7 +285,7 @@ def main():
 	parser.add_argument('-artifact-dir', required=True, help=u'最终成品目录？将搜索这些目录，找出过往的日志')
 	parser.add_argument('-action', choices=['init', 'check', 'pack', 'clean'], required=True, help=u'check只确保初始包存在，init则强制重新生成初始化包(不提版), pack则生成差异包(递进版本)')
 	parser.add_argument('-ignores-ext', nargs='*', help=u'彻底忽略的扩展名，如: .meta .gitignore')
-	parser.add_argument('-whitelist', nargs='*', help=u'激活白名单模式,路径包含这些字符串才会被认为变化\n(但是依然会存在于.manifest列表,主要应用于手动对某文件做包)')
+	parser.add_argument('-blacklist', nargs='*', help=u'激活黑名单模式,路径包含这些字符串才会被认为没变化\n(但是依然会存在于.manifest列表,主要应用于手动对某文件做包)')
 
 	args = parser.parse_args()
 
@@ -310,8 +309,8 @@ def main():
 	print("Action: %s" % args.action)
 	if args.ignores_ext:
 		print('Ignores Ext: `%s`' % ','.join(args.ignores_ext))
-	if args.whitelist:
-		print('Whitelist: `%s`' % ','.join(args.whitelist))
+	if args.blacklist:
+		print('Blacklist: `%s`' % ','.join(args.blacklist))
 
 
 	args.mainPackageName = '%s.%d.zip' % (args.package_name, resVersion)
