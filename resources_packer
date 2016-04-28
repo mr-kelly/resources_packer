@@ -111,6 +111,10 @@ def create_package(args, packagePath, paths, compareFilesMap=None):
 					fileFullPath = get_clean_path('%s/%s' % (cleanDirFullPath, filePath))
 					filename, file_extension = os.path.splitext(fileFullPath)
 
+					# 文件相对zip的路径
+					fileZipPath = get_clean_path('%s/%s' % (dirZipPath, filePath))
+					fileZipPath = fileZipPath.lstrip('/') # 去掉开始的/
+
 					# 扩展名判断
 					hasIgnoreExt = False
 					if args.ignores_ext != None:# and file_extension in args.ignores_ext:
@@ -119,12 +123,6 @@ def create_package(args, packagePath, paths, compareFilesMap=None):
 								hasIgnoreExt = True # 忽略该扩展名的
 					if hasIgnoreExt:
 						continue
-
-					# 文件相对zip的路径
-					fileZipPath = get_clean_path('%s/%s' % (dirZipPath, filePath))
-					fileZipPath = fileZipPath.lstrip('/') # 去掉开始的/
-
-					fileMD5 = get_file_md5(fileFullPath)
 
 					# 是否激活黑名单模式
 					in_blacklist = False  # 默认true
@@ -135,10 +133,12 @@ def create_package(args, packagePath, paths, compareFilesMap=None):
 								break
 
 					if in_blacklist:
-						# 黑名单直接写入的旧的数据,或当它不存在
-						if compareFilesMap:
-							manifestCsv.writerow(compareFilesMap[fileZipPath])
+						# 黑名单直接忽略
+						# if compareFilesMap:
+							# manifestCsv.writerow(compareFilesMap[fileZipPath])
 						continue
+
+					fileMD5 = get_file_md5(fileFullPath)
 
 					# 进行比较! 如果一样，不写入文件，但写入信息, 以下是写入文件
 					if ( \
@@ -289,7 +289,7 @@ def main():
 	parser.add_argument('-artifact-dir', required=True, help=u'最终成品目录？将搜索这些目录，找出过往的日志')
 	parser.add_argument('-action', choices=['init', 'check', 'pack', 'clean'], required=True, help=u'check只确保初始包存在，init则强制重新生成初始化包(不提版), pack则生成差异包(递进版本)')
 	parser.add_argument('-ignores-ext', nargs='*', help=u'彻底忽略的扩展名，如: .meta .gitignore')
-	parser.add_argument('-blacklist', nargs='*', help=u'激活黑名单模式,路径包含这些字符串才会被认为没变化\n(但是依然会存在于.manifest列表,主要应用于手动对某文件做包)')
+	parser.add_argument('-blacklist', nargs='*', help=u'类似ignores-ext, 激活黑名单模式,路径包含这些字符串才会被忽略')
 
 	args = parser.parse_args()
 
