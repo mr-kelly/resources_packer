@@ -7,6 +7,7 @@ Website: http://github.com/mr-kelly/resources_packer
 
 用于指定目录的差异zip包命令行工具，无项目逻辑依赖，可各个项目使用
 
+注意点：跨版本，文件回滚； 相邻版本，文件删除
 """
 import argparse, os, sys, zipfile, csv
 import StringIO
@@ -36,11 +37,11 @@ def get_file_md5(filePath):
 	"""
 	return get_stream_md5(open(filePath, 'rb'))
 
-def verify_package(packagePath, writedFilesMap):
+def verify_package(packagePath, writedFilesMap, deleted_files_map):
 	"""
 	校验文件内容是否跟manifest一致，一致则生成md5文件
 	"""
-
+	assert(os.path.isfile(packagePath))
 	with zipfile.ZipFile(packagePath, 'r', zipfile.ZIP_DEFLATED) as rz:
 		print 'Verify zip package correct ... %s' % packagePath
 		rManifestStream = rz.open(MANIFEST_FILE_NAME)
@@ -62,20 +63,32 @@ def verify_package(packagePath, writedFilesMap):
 			assert(zipFileMd5 == md5Str)
 			assert(zipFileMd5 == get_file_md5(fullFile))
 
+		for deleted in deleted_files_map:
+			try:
+				rz.open(deleted)
+			except:
+				continue # 不存在就对了，存在反而不对
+			assert(False)
+
 		# 验证成功，生成md5文件
 		with open('%s.md5' % packagePath, 'wb+') as md5f:
 			md5f.write(get_file_md5(packagePath))
+	return True
 
 
-def create_package(args, packagePath, paths, compareFilesMap=None):
+def create_package(args, packagePath, paths, compareFilesMap=None, force_create=False):
 	"""
 	创建资源包
 	后面参数为空则是全量包了
+	force_create 默认如果没有任何文件差异，会自动删除掉文件，适用于跨版本差异包，文件回滚状态时，如3-7版本，虽然没有变化，但要强制创建
+	compareFilesMap 为上一版的文件列表
 	"""
 
 	print('@@ => Create Package ... %s' % packagePath)
 
 	writedFilesMap = {} # 写入过的文件统计 / zipPath -> fullPath
+	touchFilesMap = {} # 检查过但没有实际写入的文件统计 / zipPath -> fullPath
+	deleted_files_map = {} # 差异比较后，被删除的文件的列表
 
 	print paths
 
@@ -99,15 +112,13 @@ def create_package(args, packagePath, paths, compareFilesMap=None):
 			print 'Top Dir: ' + topDirPath
 			print('')
 
-
-
 			for dirFullPath, subdirList, fileList in os.walk(abspath):
 				cleanDirFullPath = get_clean_path(dirFullPath)
 				# 文件夹相对zip的路径 = 完整路径 - 上层大目录路径
 				dirZipPath = cleanDirFullPath.replace(topDirPath, '')
 
 				for filePath in fileList:
-					
+
 					fileFullPath = get_clean_path('%s/%s' % (cleanDirFullPath, filePath))
 					filename, file_extension = os.path.splitext(fileFullPath)
 
@@ -129,7 +140,7 @@ def create_package(args, packagePath, paths, compareFilesMap=None):
 					if args.blacklist: #黑名单存在则要判断
 						for black_item in args.blacklist:
 							if black_item in fileFullPath:
-								in_blacklist = True 
+								in_blacklist = True
 								break
 
 					if in_blacklist:
@@ -156,6 +167,7 @@ def create_package(args, packagePath, paths, compareFilesMap=None):
 					os.stat_float_times(False)
 					file_mtime = os.path.getmtime(fileFullPath)
 
+					touchFilesMap[fileZipPath] = fileFullPath
 					# 所有文件都写入这里，无例外
 					manifestCsv.writerow({
 						'File': fileZipPath,
@@ -166,18 +178,38 @@ def create_package(args, packagePath, paths, compareFilesMap=None):
 					})
 		zf.writestr(MANIFEST_FILE_NAME, manifestStream.getvalue())
 
+		# 判断有无文件删除
+		if compareFilesMap:
+			for filepath in compareFilesMap.keys():
+				if not filepath in touchFilesMap.keys():
+					print("[Deleted]Found a deleted file `%s`" % (filepath))
+					deleted_files_map[filepath] = compareFilesMap[filepath]
+
+			# 写入被删除的文件的列表
+			if len(deleted_files_map) > 0:
+				deletedStream= StringIO.StringIO()
+				for k in deleted_files_map.keys():
+					deletedStream.write('%s\n'%k)
+				zf.writestr('.deleted', deletedStream.getvalue())
+
+
+
 
 
 	#print manifestStream.getvalue()
 	print("Total Writed Files Count: %d" % len(writedFilesMap))
+	has_changed = len(writedFilesMap) > 0 or len(deleted_files_map) > 0
 
-	if len(writedFilesMap) > 0:
-		verify_package(packagePath, writedFilesMap)
+	# 验证文件
+	verify_package(packagePath, writedFilesMap, deleted_files_map)
 
 	manifestStream.close()
 
+
+	# 处理有没有文件被删除的情况
+
 	# 如果没任何操作就直接退出，不写入版本，并且删除临时创建的zip
-	if len(writedFilesMap) == 0:
+	if not has_changed and not force_create:
 		# 没写入任何文件，删掉生成的zip直接退出吧
 		print("[WARN]No Files Changed, no need to Zip Resource : %s "% packagePath)
 		os.remove(packagePath)
@@ -207,18 +239,19 @@ def get_current_resource_version(versionFilePath):
 		strVersion = f.read()
 	return int(strVersion)
 
-def create_package_diff(args, newResVersion, autoClean = True):
+def create_package_diff(args, autoClean = True):
 	"""
 	创建指定新版本的新差异资源包
 
 	autoClean 是否创建完毕后，清理旧的差异包
 	"""
-	resVersion = newResVersion - 1
+	args.resVersion = args.newResVersion - 1
 
 
 	# 寻找上一版zip包, 总结跟现在的不同
-	i = resVersion + 1
+	i = args.resVersion + 1
 	bResult = True # 标记是否有任意失败
+	force_create_diff = False
 	while True:
 		i = i - 1
 		if i < 0:
@@ -250,11 +283,14 @@ def create_package_diff(args, newResVersion, autoClean = True):
 				compareFilesMap[row['File']] = row # 读取到所有记录
 
 		# 写入新版
-		newPackageName = '%s.%d-%d.zip' % (args.package_name, i, newResVersion)
+		newPackageName = '%s.%d-%d.zip' % (args.package_name, i, args.newResVersion)
 		newPackagePath = '%s/%s' % (args.artifact_dir, newPackageName)
 		print 'NEW PACK ==============> %s' % newPackageName
 
-		if create_package(args, newPackagePath, args.paths, compareFilesMap):
+		if create_package(args, newPackagePath, args.paths, compareFilesMap, force_create_diff):
+			# 当最后一个差异包生成成功后，要确保其它差异包强制生成！
+			if (i+1) == args.newResVersion: #
+				force_create_diff = True
 			pass
 		else:
 			# 任意一个没有构建成功直接退出吧
@@ -267,8 +303,8 @@ def clean_old_packages(args):
 	"""
 	清理指定旧版本的所有资源包
 	"""
-	resVersion = get_current_resource_version(args.version_file)
-	cleanVersion = resVersion - 1 # 因为未知上一阶段是否生成生成，所以起始位上上个版本
+	args.resVersion = get_current_resource_version(args.version_file)
+	cleanVersion = args.resVersion - 1 # 因为未知上一阶段是否生成生成，所以起始位上上个版本
 
 	for _oldVersion in range(1, cleanVersion + 1):
 		# 清理资源版本的顶头包，比如现在最新资源版本7, 那么0-6, 1-6等，已经用不上了
@@ -281,18 +317,162 @@ def clean_old_packages(args):
 			if os.path.isfile(oldPackagePath):
 				shutil.move(oldPackagePath, moveToPath)
 				print('Clean/Archived `%s`' % oldPackageName)
-def main():
-	parser = argparse.ArgumentParser(description=u'资源包、差异包生成工具， 传入指定的文件目录、输出名字，生成zip')
-	parser.add_argument('-paths', required=True, nargs='+', help=u'路径，目录或文件，将作为zip的根路径')
-	parser.add_argument('-package-name', required=True, help=u'包名字前缀')
-	# parser.add_argument('-version-file-name', default='ResourceVersion.txt', help=u'包含一个数字的txt文件名，相对artifact-dir路径,默认ResourceVersion.txt')
-	parser.add_argument('-artifact-dir', required=True, help=u'最终成品目录？将搜索这些目录，找出过往的日志')
-	parser.add_argument('-action', choices=['init', 'check', 'pack', 'clean'], required=True, help=u'check只确保初始包存在，init则强制重新生成初始化包(不提版), pack则生成差异包(递进版本)')
-	parser.add_argument('-ignores-ext', nargs='*', help=u'彻底忽略的扩展名，如: .meta .gitignore')
-	parser.add_argument('-blacklist', nargs='*', help=u'类似ignores-ext, 激活黑名单模式,路径包含这些字符串才会被忽略')
 
-	args = parser.parse_args()
+def test_assert_nofile(zip_path, filepath):
+	"""
+	断点一个zip包里 不！ 包含一个文件
+	"""
+	with zipfile.ZipFile(zip_path, 'r') as rzip:
+		try:
+			rzip.open(filepath)
+		except:
+			return # 不存在，则成功
+		assert(False)
 
+def test_assert_file(zip_path, filepath):
+	"""
+	断点一个zip包里包含一个文件
+	"""
+	with zipfile.ZipFile(zip_path, 'r') as rzip:
+		assert(rzip.open(filepath))
+
+def test(args):
+	"""
+	自动化测试
+	"""
+	print("A test for resources_packer, will generate a test folder under script")
+	script_path = os.path.dirname(os.path.realpath(__file__))
+	test_dirpath = os.path.join(script_path, '___test_resources_packer')
+	test_artifactpath = os.path.join(script_path, '___test_resources_packer_artifacts')
+
+	if os.path.exists(test_dirpath):
+		print('Delete test dir... %s' % test_dirpath)
+		shutil.rmtree(test_dirpath)
+	if os.path.exists(test_artifactpath):
+		print('Delete test dir... %s' % test_artifactpath)
+		shutil.rmtree(test_artifactpath)
+
+	os.makedirs(test_dirpath)
+	os.makedirs(os.path.join(test_dirpath, 'subdir'))
+	os.makedirs(test_artifactpath)
+
+	args.paths = [test_dirpath]
+	args.package_name = 'test_package'
+	args.artifact_dir = test_artifactpath
+
+
+	# create test file
+	with open(os.path.join(test_dirpath, 'a.file'), 'wb+') as wf:
+		wf.write('ok, this is a file')
+
+	args.action = 'init'
+	init_args(args)
+	do_init_or_check(args)
+	test_assert_file(os.path.join(test_artifactpath, 'test_package.0.zip'), '___test_resources_packer/a.file')
+
+	args.action = 'check'
+	init_args(args)
+	do_init_or_check(args)
+
+	# 1号包
+	with open(os.path.join(test_dirpath, 'a.file'), 'wb+') as wf:
+		wf.write('ok, this is a file but modified')
+	init_args(args)
+	do_pack(args)
+	assert(os.path.exists(os.path.join(test_artifactpath, 'test_package.0-1.zip')))
+	test_assert_file(os.path.join(test_artifactpath, 'test_package.0-1.zip'), '___test_resources_packer/a.file')
+
+	# 无差异，不会生成资源包
+	args.action = 'pack'
+	init_args(args)
+	do_pack(args)
+	assert(not os.path.exists(os.path.join(test_artifactpath, 'test_package.0-.zip')))
+
+	# 2号包，回滚a文件内容， 测试跨版本，回滚同样的内容生成出包
+	with open(os.path.join(test_dirpath, 'a.file'), 'wb+') as wf:
+		wf.write('ok, this is a file')
+	init_args(args)
+	do_pack(args)
+	assert(os.path.exists(os.path.join(test_artifactpath, 'test_package.0-2.zip')))
+	test_assert_nofile(os.path.join(test_artifactpath, 'test_package.0-2.zip'), '___test_resources_packer/a.file')
+
+	# 3号包
+	with open(os.path.join(test_dirpath, 'subdir', 'b.file'), 'wb+') as wf:
+		wf.write('ok, this is b file')
+	init_args(args)
+	do_pack(args)
+	assert(os.path.exists(os.path.join(test_artifactpath, 'test_package.0-3.zip')))
+	test_assert_file(os.path.join(test_artifactpath, 'test_package.0-3.zip'), '___test_resources_packer/subdir/b.file')
+
+
+	# 4号包，回到了0号包的同样状态
+	os.remove(os.path.join(test_dirpath, 'subdir', 'b.file'))
+	init_args(args)
+	do_pack(args)
+	assert(os.path.exists(os.path.join(test_artifactpath, 'test_package.0-4.zip')))
+	test_assert_nofile(os.path.join(test_artifactpath, 'test_package.0-4.zip'), '___test_resources_packer/subdir/b.file')
+
+	# 5号包，多生成写文件 c
+	with open(os.path.join(test_dirpath, 'subdir', 'c.file'), 'wb+') as wf:
+		wf.write('ok, this is c file')
+	init_args(args)
+	do_pack(args)
+	assert(os.path.exists(os.path.join(test_artifactpath, 'test_package.0-5.zip')))
+	test_assert_file(os.path.join(test_artifactpath, 'test_package.0-5.zip'), '___test_resources_packer/subdir/c.file')
+
+	# 6号包，删除所有。。。
+	os.remove(os.path.join(test_dirpath, 'a.file'))
+	os.remove(os.path.join(test_dirpath, 'subdir', 'c.file'))
+	init_args(args)
+	do_pack(args)
+	assert(os.path.exists(os.path.join(test_artifactpath, 'test_package.0-6.zip')))
+	test_assert_nofile(os.path.join(test_artifactpath, 'test_package.0-6.zip'), '___test_resources_packer/subdir/b.file')
+	test_assert_nofile(os.path.join(test_artifactpath, 'test_package.0-6.zip'), '___test_resources_packer/subdir/c.file')
+	test_assert_nofile(os.path.join(test_artifactpath, 'test_package.0-6.zip'), '___test_resources_packer/a.file')
+
+
+def do_pack(args):
+	"""
+	执行pack操作
+	"""
+	bResult = create_package_diff(args)
+
+	if bResult:
+
+		# 差异包生成完，生成对应版本的完整包
+		newFullPackageName = '%s.%d.zip' % (args.package_name, args.newResVersion)
+		newFullPackagePath = '%s/%s' % (args.artifact_dir, newFullPackageName)
+		create_package(args, newFullPackagePath, args.paths, None)
+
+
+		cleanVersion = args.resVersion
+		# 修改版本号，并写入
+		with open(args.version_file, 'wb+') as wf:
+			wf.write(str(args.newResVersion))
+		print('')
+		print('New Resource Version --> %s' % args.newResVersion)
+
+		# TODO: 暂时不清理，永久保留历史
+		# clean_old_packages(args)
+
+
+def do_init_or_check(args):
+	# 直接生成完整包
+	# init相当于强制创建
+	if not os.path.isfile(args.get_main_package_path() ) or args.action == 'init': # 不存在，或init时强制重新创建版本完整包
+		create_package(args, args.get_main_package_path() , args.paths)
+
+		if args.resVersion != 0:
+			create_package_diff(args, False) # 重复生成差异包，这时候已经没有差异了，强制生成空的
+		print("[WARN]ReBuild Main Package because it has existed... %s" % args.get_main_package_path() )
+	else: # check and exist
+		# 存在的，不允许重新创建
+		print('[WARN]no need main package `%s`' % args.get_main_package_path() )
+
+def init_args(args):
+	"""
+	初始化args，放入参数
+	"""
 	args.version_file = '%s/%s.resource_version.txt' % (args.artifact_dir, args.package_name)
 
 	if not os.path.isfile(args.version_file):
@@ -306,10 +486,10 @@ def main():
 	strVersion = get_current_resource_version(args.version_file)
 
 	# 资源版本号在第4位
-	resVersion = int(strVersion)
-	newResVersion = resVersion + 1
+	args.resVersion = int(strVersion)
+	args.newResVersion = args.resVersion + 1
 
-	print("Current Resource Version: %d" % resVersion)
+	print("Current Resource Version: %d" % args.resVersion)
 	print("Action: %s" % args.action)
 	if args.ignores_ext:
 		print('Ignores Ext: `%s`' % ','.join(args.ignores_ext))
@@ -317,43 +497,32 @@ def main():
 		print('Blacklist: `%s`' % ','.join(args.blacklist))
 
 
-	args.mainPackageName = '%s.%d.zip' % (args.package_name, resVersion)
-	args.mainPackagePath = '%s/%s' % (args.artifact_dir, args.mainPackageName)
+	args.get_main_package_name = lambda: '%s.%d.zip' % (args.package_name, args.resVersion)
+	args.get_main_package_path  = lambda: '%s/%s' % (args.artifact_dir, args.get_main_package_name())
 
-	if args.action == 'init' or args.action == 'check':
-		# 直接生成完整包
-		# init相当于强制创建
-		if not os.path.isfile(args.mainPackagePath) or args.action == 'init': # 不存在，或init时强制重新创建版本完整包
-			create_package(args, args.mainPackagePath, args.paths)
 
-			if resVersion != 0:
-				create_package_diff(args, resVersion, False) # 重复生成差异包，这时候已经没有差异了，强制生成空的
-			print("[WARN]ReBuild Main Package because it has existed... %s" % args.mainPackagePath)
-		else: # check and exist
-			# 存在的，不允许重新创建
-			print('[WARN]no need main package `%s`' % args.mainPackagePath)
+def main():
+	parser = argparse.ArgumentParser(description=u'资源包、差异包生成工具， 传入指定的文件目录、输出名字，生成zip')
+	parser.add_argument('-paths', required=True, nargs='+', help=u'路径，目录或文件，将作为zip的根路径')
+	parser.add_argument('-package-name', required=True, help=u'包名字前缀')
+	# parser.add_argument('-version-file-name', default='ResourceVersion.txt', help=u'包含一个数字的txt文件名，相对artifact-dir路径,默认ResourceVersion.txt')
+	parser.add_argument('-artifact-dir', required=True, help=u'最终成品目录？将搜索这些目录，找出过往的日志')
+	parser.add_argument('-action', choices=['init', 'check', 'pack', 'clean', 'test'], required=True, help=u'check只确保初始包存在，init则强制重新生成初始化包(不提版), pack则生成差异包(递进版本)')
+	parser.add_argument('-ignores-ext', nargs='*', help=u'彻底忽略的扩展名，如: .meta .gitignore')
+	parser.add_argument('-blacklist', nargs='*', help=u'类似ignores-ext, 激活黑名单模式,路径包含这些字符串才会被忽略')
+
+	args = parser.parse_args()
+
+	init_args(args)
+
+	if args.action == 'test':
+		test(args)
+	elif args.action == 'init' or args.action == 'check':
+		do_init_or_check(args)
 	elif args.action == 'clean':
 		clean_old_packages(args) # 清理旧版本
 	else:
-		bResult = create_package_diff(args, newResVersion)
-
-		if bResult:
-
-			# 差异包生成完，生成对应版本的完整包
-			newFullPackageName = '%s.%d.zip' % (args.package_name, newResVersion)
-			newFullPackagePath = '%s/%s' % (args.artifact_dir, newFullPackageName)
-			create_package(args, newFullPackagePath, args.paths, None)
-
-
-			cleanVersion = resVersion
-			# 修改版本号，并写入
-			with open(args.version_file, 'wb+') as wf:
-				wf.write(str(newResVersion))
-			print('')
-			print('New Resource Version --> %s' % newResVersion)
-
-			# TODO: 暂时不清理，永久保留历史
-			# clean_old_packages(args)
+		do_pack(args)
 
 if __name__ == '__main__':
 	main()
