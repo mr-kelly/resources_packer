@@ -448,7 +448,7 @@ def do_pack(args):
 		cleanVersion = args.resVersion
 		# 修改版本号，并写入
 		with open(args.version_file, 'wb+') as wf:
-			wf.write(str(args.newResVersion))
+			wf.write(str(args.newResVersion).zfill(8))
 		print('')
 		print('New Resource Version --> %s' % args.newResVersion)
 
@@ -480,7 +480,7 @@ def init_args(args):
 		mkdir_p(args.artifact_dir)
 
 		with open(args.version_file, 'wb+') as wf:
-			wf.write('0')
+			wf.write('0'.zfill(8))
 		print "Create Version file: %s" % args.version_file
 
 	strVersion = get_current_resource_version(args.version_file)
